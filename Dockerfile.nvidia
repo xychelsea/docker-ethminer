@@ -1,0 +1,123 @@
+# CCMiner Dockerfile
+# Copyright (C) 2020  Chelsea E. Manning
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+FROM nvidia/cuda:11.2.0-devel-ubuntu20.04
+LABEL description="Ethereum Miner GPU Container"
+
+# $ docker build -t xychelsea/ethminer:latest-gpu -f Dockerfile.nvidia .
+# $ docker run --gpus all --rm -it xychelsea/ethminer:latest-gpu /bin/bash
+# $ docker push xychelsea/ethminer:latest-gpu
+
+ARG MINE_GID="100"
+ARG MINE_PATH="/usr/local/ethminer"
+ARG MINE_UID="1000"
+ARG MINE_USER="ethminer"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update packages
+RUN apt-get update --fix-missing \
+    && apt-get -y upgrade \
+    && apt-get -y dist-upgrade
+
+# Install dependencies
+RUN apt-get install -y --no-install-recommends \
+    automake \
+    autotools-dev \
+    build-essential \
+    bzip2 \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    libcurl4-openssl-dev \
+    libdbus-1-dev \
+    libssl-dev \
+    libjansson-dev \
+    locales \
+    mesa-common-dev \
+    sudo \
+    tini \
+    wget
+
+RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen \
+    && locale-gen
+
+# Configure environment
+ENV MINE_PATH=${MINE_PATH} \
+    MINE_GID=${MINE_GID} \
+    MINE_UID=${MINE_UID} \
+    MINE_USER=${MINE_USER} \
+    HOME=/home/${MINE_USER} \
+    LANG=en_US.UTF-8 \
+    LANGUAGE=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    SHELL=/bin/bash
+
+ENV PATH ${MINE_PATH}/bin:${PATH}
+
+# Enable prompt color, generally
+RUN sed -i 's/^#force_color_prompt=yes/force_color_prompt=yes/' /etc/skel/.bashrc
+
+# Create default user wtih name "miner"
+RUN echo "auth requisite pam_deny.so" >> /etc/pam.d/su \
+    && sed -i.bak -e 's/^%admin/#%admin/' /etc/sudoers \
+    && sed -i.bak -e 's/^%sudo/#%sudo/' /etc/sudoers \
+    && useradd -m -s /bin/bash -N -u ${MINE_UID} ${MINE_USER} \
+    && mkdir -p ${MINE_PATH} \
+    && chown -R ${MINE_USER}:${MINE_GID} ${MINE_PATH} \
+    && chmod g+w /etc/passwd
+
+# Switch to user "miner"
+USER ${MINE_UID}
+WORKDIR ${HOME}
+
+# Install Ethereum Miner
+RUN git clone git://github.com/ethereum-mining/ethminer.git \
+    && cd ~/ethminer \
+    && git submodule update --init --recursive \
+    && mkdir -p ~/ethminer/build && cd ~/ethminer/build \
+    && cmake ~/ethminer \
+    && cmake --build .
+
+# Switch back to root
+USER root
+
+RUN cd /home/ethminer/ethminer/build && make install
+
+# Clean packages and caches
+RUN apt-get --purge -y remove \
+        automake \
+        autotools-dev \
+        cmake \
+        curl \
+        git \
+        wget \
+    && apt-get --purge -y autoremove \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && rm -rvf /home/${MINE_PATH}/.cache/yarn
+
+# Configure container startup
+ENTRYPOINT [ "tini", "-g", "--" ]
+CMD [ "/bin/bash" ]
+
+# Re-activate user "miner"
+USER $MINE_UID
+WORKDIR $HOME
